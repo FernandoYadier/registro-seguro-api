@@ -1,23 +1,17 @@
-  const sqlite3 = require('sqlite3').verbose();
+const sqlite3 = require('sqlite3').verbose();
+const db = new sqlite3.Database('./database.db');
 
-  // base de datos
-  const db = new sqlite3.Database('./database.db');
-
-  db.serialize(() => {
-  const sql = `CREATE TABLE IF NOT EXISTS usuarios (
+db.serialize(() => {
+  // Crea la tabla de usuarios con la columna de saldo
+  db.run(`CREATE TABLE IF NOT EXISTS usuarios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE, 
     password TEXT NOT NULL, 
-    role TEXT DEFAULT 'cliente'
-  )`;
-
-    db.run(sql, (err) => {
-      if (err) {
-        console.error("Error al crear la tabla:", err.message);
-      } else {
-        console.log(" Base de datos y tabla 'usuarios' creadas correctamente.");
-      }
-    });
+    role TEXT DEFAULT 'cliente',
+    saldo REAL DEFAULT 0.0
+  )`, (err) => {
+    if (err) console.error("Error:", err.message);
+    else console.log("Tabla 'usuarios' lista con columna de saldo.");
   });
-
-  db.close();
+});
+db.close();
