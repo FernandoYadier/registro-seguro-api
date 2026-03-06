@@ -61,8 +61,18 @@ app.post("/registro", async (req, res) => {
   const { email, password } = req.body;
 
   // Validación estricta: formato de email y longitud de password
-  if (!email || !esEmailValido(email) || !password || password.length < 8 || password.length > 10) {
-    return res.status(400).send("Datos de registro inválidos (Email mal formado o contraseña fuera de rango)");
+  if (
+    !email ||
+    !esEmailValido(email) ||
+    !password ||
+    password.length < 8 ||
+    password.length > 10
+  ) {
+    return res
+      .status(400)
+      .send(
+        "Datos de registro inválidos (Email mal formado o contraseña fuera de rango)",
+      );
   }
 
   const sqlCheck = "SELECT * FROM usuarios WHERE email = ?";
@@ -72,7 +82,8 @@ app.post("/registro", async (req, res) => {
 
     try {
       const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
-      const sqlInsert = "INSERT INTO usuarios (email, password, saldo) VALUES (?, ?, 0.0)";
+      const sqlInsert =
+        "INSERT INTO usuarios (email, password, saldo) VALUES (?, ?, 0.0)";
       db.run(sqlInsert, [email, hashedPassword], function (err) {
         if (err) return res.status(500).send("Error al registrar");
         res.status(201).send("Usuario Registrado Correctamente");
@@ -87,7 +98,8 @@ app.post("/registro", async (req, res) => {
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password) return res.status(400).send("Credenciales Invalidas");
+  if (!email || !password)
+    return res.status(400).send("Credenciales Invalidas");
 
   const sqlCheck = "SELECT * FROM usuarios WHERE email = ?";
   db.get(sqlCheck, [email], async (err, row) => {
@@ -96,10 +108,13 @@ app.post("/login", async (req, res) => {
 
     try {
       const passwordMatch = await bcrypt.compare(password, row.password);
-      if (!passwordMatch) return res.status(401).send("Email o contraseña incorrectos");
+      if (!passwordMatch)
+        return res.status(401).send("Email o contraseña incorrectos");
 
       const payload = { id: row.id, email: row.email, role: row.role };
-      const token = jwt.sign(payload, SECRET_KEY, { expiresIn: JWT_EXPIRES_IN });
+      const token = jwt.sign(payload, SECRET_KEY, {
+        expiresIn: JWT_EXPIRES_IN,
+      });
 
       res.status(200).json({ message: "Login exitoso", token, user: payload });
     } catch (error) {
@@ -115,10 +130,10 @@ app.post("/mi-saldo", verificarToken, (req, res) => {
   const sql = "SELECT email, saldo FROM usuarios WHERE id = ?";
   db.get(sql, [req.user.id], (err, row) => {
     if (err) return res.status(500).send("Error al obtener saldo");
-    res.status(200).json({ 
-      email: row.email, 
+    res.status(200).json({
+      email: row.email,
       saldo: row.saldo,
-      detalle: "Consulta de saldo realizada bajo estándar" 
+      detalle: "Consulta de saldo realizada bajo estándar",
     });
   });
 });
@@ -127,14 +142,18 @@ app.post("/mi-saldo", verificarToken, (req, res) => {
 app.post("/depositar", verificarToken, (req, res) => {
   const { monto } = req.body;
 
-  if (typeof monto !== 'number' || monto <= 0) {
-    return res.status(400).send("El monto debe ser un número positivo (Validación Estricta)");
+  if (typeof monto !== "number" || monto <= 0) {
+    return res
+      .status(400)
+      .send("El monto debe ser un número positivo (Validación Estricta)");
   }
 
   const sqlUpdate = "UPDATE usuarios SET saldo = saldo + ? WHERE id = ?";
   db.run(sqlUpdate, [monto, req.user.id], function (err) {
     if (err) return res.status(500).send("Error al procesar el depósito");
-    res.status(200).json({ message: `Depósito de $${monto} realizado con éxito` });
+    res
+      .status(200)
+      .json({ message: `Depósito de $${monto} realizado con éxito` });
   });
 });
 
@@ -156,7 +175,8 @@ app.put("/actualizar-password", verificarToken, async (req, res) => {
 
 app.put("/cambiar-rol", verificarToken, (req, res) => {
   const { email, newRole } = req.body;
-  if (req.user.role !== "admin") return res.status(403).send("Acceso Denegado: Se requiere Admin");
+  if (req.user.role !== "admin")
+    return res.status(403).send("Acceso Denegado: Se requiere Admin");
 
   const roles = ["cliente", "admin", "moderador"];
   if (!roles.includes(newRole)) return res.status(400).send("Rol no válido");
@@ -164,6 +184,10 @@ app.put("/cambiar-rol", verificarToken, (req, res) => {
   const sqlUpdate = "UPDATE usuarios SET role = ? WHERE email = ?";
   db.run(sqlUpdate, [newRole, email], function (err) {
     if (err) return res.status(500).send("Error");
+
+    if (this.changes === 0)
+      return res.status(404).send("Usuario no encontrado");
+
     res.status(200).send(`Rol de ${email} cambiado a ${newRole}`);
   });
 });
