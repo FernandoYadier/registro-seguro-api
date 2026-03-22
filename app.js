@@ -5,11 +5,14 @@ const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const winston = require("winston");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(express.json());
 
-// Variables de entorno desde .env
+// Variables de entorno
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || "./database.db";
 const SECRET_KEY = process.env.SECRET_KEY;
@@ -17,54 +20,94 @@ const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS) || 10;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "1h";
 const NODE_ENV = process.env.NODE_ENV || "development";
 
-// Validar que existe la SECRET_KEY
+// === CREAR CARPETA LOGS ===
+const logDir = path.join(__dirname, "logs");
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir);
+}
+
+// === LOGGER ===
+const logger = winston.createLogger({
+  level: "info",
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.printf(
+      ({ level, message, timestamp }) =>
+        `[${level.toUpperCase()}] ${timestamp} - ${message}`
+    )
+  ),
+  transports: [
+    new winston.transports.File({
+      filename: path.join(logDir, "error.log"),
+      level: "error",
+    }),
+    new winston.transports.File({
+      filename: path.join(logDir, "combined.log"),
+    }),
+  ],
+});
+
+// Mostrar en consola también
+if (NODE_ENV !== "production") {
+  logger.add(new winston.transports.Console());
+}
+
+// Validar SECRET_KEY
 if (!SECRET_KEY) {
-  console.error("ERROR: SECRET_KEY no está definida en el archivo .env"); // LOG FATAL
+  logger.error("SECRET_KEY no está definida");
   process.exit(1);
 }
 
-// Conexión a la base de datos
+// Conexión a DB
 const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) {
-    console.error("Error al conectar con la base de datos:", err); // LOG DEBUG
+    logger.error(`Error DB: ${err.message}`);
   } else {
-    console.log("Conectado a la base de datos:", DB_PATH); // LOG INFO
+    logger.info(`Conectado a DB: ${DB_PATH}`);
   }
 });
 
-// --- MIDDLEWARES ---
+// === LOG AUTOMÁTICO DE TODAS LAS PETICIONES 🔥
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.url}`);
+  next();
+});
 
-// Middleware para verificar JWT
+// --- MIDDLEWARE JWT ---
 function verificarToken(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
 
-  if (!token) return res.status(401).send("Token no proporcionado"); // LOG ERROR
+  if (!token) {
+    logger.warn("Acceso sin token");
+    return res.status(401).send("Token no proporcionado");
+  }
 
   jwt.verify(token, SECRET_KEY, (err, decoded) => {
-    if (err) return res.status(403).send("Token invalido o expirado"); // LOG ERROR
+    if (err) {
+      logger.warn("Token inválido");
+      return res.status(403).send("Token invalido o expirado");
+    }
+
+    logger.info(`Token válido usuario ${decoded.id}`);
     req.user = decoded;
     next();
   });
 }
 
-// Función de validación de Email (Regex) para cumplir con "Validación Estricta"
+// Validaciones
 function esEmailValido(email) {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function contieneHTML(texto) {
   return /<[^>]*>/.test(texto);
 }
 
-// --- ENDPOINTS DE USUARIOS ---
-
-// Endpoint POST - Registro de usuario
+// --- REGISTRO ---
 app.post("/registro", async (req, res) => {
   const { email, password } = req.body;
 
-  // Validación estricta: formato de email y longitud de password
   if (
     !email ||
     !esEmailValido(email) ||
@@ -72,147 +115,128 @@ app.post("/registro", async (req, res) => {
     password.length < 8 ||
     password.length > 10
   ) {
-    return res.status(400).send("Datos de registro inválidos"); // LOG ERROR
+    logger.warn("Registro inválido");
+    return res.status(400).send("Datos de registro inválidos");
   }
 
   if (contieneHTML(email) || contieneHTML(password)) {
-    return res.status(400).send("Datos de registro inválidos"); // LOG ERROR
+    logger.warn("Registro con HTML");
+    return res.status(400).send("Datos de registro inválidos");
   }
 
-  const sqlCheck = "SELECT * FROM usuarios WHERE email = ?";
-  db.get(sqlCheck, [email], async (err, row) => {
-    if (err) return res.status(500).send("Error de servidor"); // LOG FATAL
-    if (row) return res.status(409).send("El usuario ya existe"); // LOG ERROR
+  db.get("SELECT * FROM usuarios WHERE email = ?", [email], async (err, row) => {
+    if (err) {
+      logger.error(`Error DB registro: ${err.message}`);
+      return res.status(500).send("Error de servidor");
+    }
+
+    if (row) {
+      logger.warn(`Usuario ya existe: ${email}`);
+      return res.status(409).send("El usuario ya existe");
+    }
 
     try {
       const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
-      const sqlInsert =
-        "INSERT INTO usuarios (email, password, saldo) VALUES (?, ?, 0.0)";
-      db.run(sqlInsert, [email, hashedPassword], function (err) {
-        if (err) return res.status(500).send("Error al registrar"); // LOG ERROR
-        res.status(201).send("Usuario Registrado Correctamente"); // LOG INFO
-      });
+
+      db.run(
+        "INSERT INTO usuarios (email, password, saldo) VALUES (?, ?, 0.0)",
+        [email, hashedPassword],
+        (err) => {
+          if (err) {
+            logger.error(`Error insert usuario: ${err.message}`);
+            return res.status(500).send("Error al registrar");
+          }
+
+          logger.info(`Usuario registrado: ${email}`);
+          res.status(201).send("Usuario Registrado Correctamente");
+        }
+      );
     } catch (error) {
-      res.status(500).send("Error en el proceso de cifrado"); // LOG FATAL
+      logger.error(`Error hash password: ${error.message}`);
+      res.status(500).send("Error en el proceso de cifrado");
     }
   });
 });
 
-// Endpoint POST - Login con JWT
+// --- LOGIN ---
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password)
-    return res.status(400).send("Credenciales Invalidas"); // LOG ERROR
+  if (!email || !password) {
+    logger.warn("Login inválido");
+    return res.status(400).send("Credenciales Invalidas");
+  }
 
-  const sqlCheck = "SELECT * FROM usuarios WHERE email = ?";
-  db.get(sqlCheck, [email], async (err, row) => {
-    if (err) return res.status(500).send("Error de servidor"); // LOG FATAL
-    if (!row) return res.status(401).send("Email o contraseña incorrectos"); // LOG ERROR
-
-    try {
-      const passwordMatch = await bcrypt.compare(password, row.password);
-      if (!passwordMatch)
-        return res.status(401).send("Email o contraseña incorrectos"); // LOG ERROR
-
-      const payload = { id: row.id, email: row.email, role: row.role };
-      const token = jwt.sign(payload, SECRET_KEY, {
-        expiresIn: JWT_EXPIRES_IN,
-      });
-
-      res.status(200).json({ message: "Login exitoso", token, user: payload }); // LOG INFO
-    } catch (error) {
-      res.status(500).send("Error en la autenticación"); // LOG FATAL
+  db.get("SELECT * FROM usuarios WHERE email = ?", [email], async (err, row) => {
+    if (err) {
+      logger.error(`Error login: ${err.message}`);
+      return res.status(500).send("Error de servidor");
     }
-  });
-});
 
-// --- ENDPOINTS CENTRALES (SALDO) ---
+    if (!row) {
+      logger.warn(`Usuario no encontrado: ${email}`);
+      return res.status(401).send("Email o contraseña incorrectos");
+    }
 
-// Endpoint POST - Consultar mi saldo (Cambiado a POST por estándar de la rúbrica)
-app.post("/mi-saldo", verificarToken, (req, res) => {
-  const sql = "SELECT email, saldo FROM usuarios WHERE id = ?";
-  db.get(sql, [req.user.id], (err, row) => {
-    if (err) return res.status(500).send("Error al obtener saldo"); // LOG ERROR
-    res.status(200).json({
-      email: row.email,
-      saldo: row.saldo,
-      detalle: "Consulta de saldo realizada bajo estándar",
+    const match = await bcrypt.compare(password, row.password);
+
+    if (!match) {
+      logger.warn(`Password incorrecta: ${email}`);
+      return res.status(401).send("Email o contraseña incorrectos");
+    }
+
+    const payload = { id: row.id, email: row.email, role: row.role };
+    const token = jwt.sign(payload, SECRET_KEY, {
+      expiresIn: JWT_EXPIRES_IN,
     });
+
+    logger.info(`Login exitoso: ${email}`);
+    res.json({ message: "Login exitoso", token, user: payload });
   });
 });
 
-// Endpoint POST - Depositar saldo (Valida que sea número positivo)
+// --- SALDO ---
+app.post("/mi-saldo", verificarToken, (req, res) => {
+  db.get(
+    "SELECT email, saldo FROM usuarios WHERE id = ?",
+    [req.user.id],
+    (err, row) => {
+      if (err) {
+        logger.error(`Error saldo: ${err.message}`);
+        return res.status(500).send("Error al obtener saldo");
+      }
+
+      logger.info(`Consulta saldo usuario ${req.user.id}`);
+      res.json(row);
+    }
+  );
+});
+
+// --- DEPOSITAR ---
 app.post("/depositar", verificarToken, (req, res) => {
   const { monto } = req.body;
 
   if (typeof monto !== "number" || monto <= 0) {
-    return res
-      .status(400)
-      .send("El monto debe ser un número positivo (Validación Estricta)"); // LOG ERROR
+    logger.warn(`Monto inválido: ${monto}`);
+    return res.status(400).send("Monto inválido");
   }
 
-  const sqlUpdate = "UPDATE usuarios SET saldo = saldo + ? WHERE id = ?";
-  db.run(sqlUpdate, [monto, req.user.id], function (err) {
-    if (err) return res.status(500).send("Error al procesar el depósito"); // LOG ERROR
-    res
-      .status(200)
-      .json({ message: `Depósito de $${monto} realizado con éxito` }); // LOG INFO
-  });
+  db.run(
+    "UPDATE usuarios SET saldo = saldo + ? WHERE id = ?",
+    [monto, req.user.id],
+    (err) => {
+      if (err) {
+        logger.error(`Error depósito: ${err.message}`);
+        return res.status(500).send("Error");
+      }
+
+      logger.info(`Depósito ${monto} usuario ${req.user.id}`);
+      res.send("Depósito realizado");
+    }
+  );
 });
 
-// --- GESTIÓN ADICIONAL ---
-
-app.put("/actualizar-password", verificarToken, async (req, res) => {
-  const { newPassword } = req.body;
-  if (!newPassword || newPassword.length < 8 || newPassword.length > 10) {
-    return res.status(400).send("Nueva contraseña inválida"); // LOG ERROR
-  }
-  if (contieneHTML(newPassword)) {
-    return res.status(400).send("Nueva contraseña inválida"); // LOG ERROR
-  }
-
-  const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
-  const sqlUpdate = "UPDATE usuarios SET password = ? WHERE id = ?";
-  db.run(sqlUpdate, [hashedPassword, req.user.id], (err) => {
-    if (err) return res.status(500).send("Error al actualizar"); // LOG ERROR
-    res.status(200).send("Contraseña actualizada"); // LOG INFO
-  });
-});
-
-app.put("/cambiar-rol", verificarToken, (req, res) => {
-  const { email, newRole } = req.body;
-  if (req.user.role !== "admin")
-    return res.status(403).send("Acceso Denegado: Se requiere Admin"); // LOG ERROR
-
-  const roles = ["cliente", "admin", "moderador"];
-  if (!roles.includes(newRole)) return res.status(400).send("Rol no válido"); // LOG ERROR
-
-  if (contieneHTML(email)) return res.status(400).send("Datos inválidos"); // LOG ERROR
-
-  const sqlUpdate = "UPDATE usuarios SET role = ? WHERE email = ?";
-  db.run(sqlUpdate, [newRole, email], function (err) {
-    if (err) return res.status(500).send("Error"); // LOG ERROR
-
-    if (this.changes === 0)
-      return res.status(404).send("Usuario no encontrado"); // LOG ERROR
-
-    res.status(200).send(`Rol de ${email} cambiado a ${newRole}`); // LOG INFO
-  });
-});
-
-// Iniciar servidor
+// --- SERVER ---
 app.listen(PORT, () => {
-  console.log("\n" + "=".repeat(60));
-  console.log(`SERVIDOR ACTIVO: http://localhost:${PORT}`);
-  console.log(`Ambiente: ${NODE_ENV} | DB: SQLite`);
-  console.log("=".repeat(60));
-  console.log("ENDPOINTS DISPONIBLES (ESTÁNDAR POST):");
-  console.log("  POST /registro         (Público)");
-  console.log("  POST /login            (Público -> Genera JWT)");
-  console.log("  POST /mi-saldo         (Requiere JWT)");
-  console.log("  POST /depositar        (Requiere JWT + Validación)");
-  console.log("  PUT  /actualizar-pass  (Requiere JWT)");
-  console.log("  PUT  /cambiar-rol      (Requiere JWT Admin)");
-  console.log("=".repeat(60) + "\n");
+  logger.info(`Servidor corriendo en http://localhost:${PORT}`);
 });
